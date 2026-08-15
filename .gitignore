@@ -1,0 +1,90 @@
+# =========================
+# Data files
+# =========================
+
+# Ignore large raw datasets
+data/raw/*.csv
+data/raw/*.xlsx
+data/raw/*.xls
+
+# Ignore processed datasets
+data/processed/*.csv
+data/processed/*.xlsx
+data/processed/*.xls
+
+# Keep sample data if needed
+!data/raw/*sample*.csv
+!data/processed/*sample*.csv
+
+
+# =========================
+# Python
+# =========================
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# =========================
+# Jupyter Notebook
+# =========================
+
+.ipynb_checkpoints/
+
+
+# =========================
+# VS Code
+# =========================
+
+.vscode/
+*.code-workspace
+
+
+# =========================
+# Machine Learning Models
+# =========================
+
+# Ignore generated model files
+*.pkl
+*.pickle
+*.joblib
+
+
+# =========================
+# Logs
+# =========================
+
+*.log
+
+
+# =========================
+# Environment / Secrets
+# =========================
+
+.env
+.env.*
+!.env.example
+
+
+# =========================
+# OS files
+# =========================
+
+.DS_Store
+Thumbs.db
+
+
+# =========================
+# Temporary files
+# =========================
+
+*.tmp
+*.temp
+*.swp
+*.bak

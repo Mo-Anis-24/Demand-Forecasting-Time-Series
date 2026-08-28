@@ -34,6 +34,8 @@ Requires-Dist: pyyaml>=6
 Requires-Dist: tqdm==4.66.4
 Requires-Dist: joblib==1.4.2
 Requires-Dist: pytest>=8
+Requires-Dist: pymongo
+Requires-Dist: dagshub
 Dynamic: author
 Dynamic: author-email
 Dynamic: requires-dist

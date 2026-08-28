@@ -111,30 +111,42 @@ class HyperparameterTuner:
 
         # ---- Nested MLflow run for this trial ----
         with mlflow.start_run(run_name=f"trial_{trial.number}", nested=True):
-            mlflow.log_params(params)
-            mlflow.set_tags({
-                "stage":        "tuning_trial",
-                "trial_number": str(trial.number),
-                "framework":    "lightgbm",
-            })
+            try:
+                mlflow.log_params(params)
+                mlflow.set_tags({
+                    "stage":        "tuning_trial",
+                    "trial_number": str(trial.number),
+                    "framework":    "lightgbm",
+                })
 
-            model = lgb.LGBMRegressor(**params)
-            model.fit(
-                self.X_train_fit, self.y_train_fit,
-                eval_set=[(self.X_val, self.y_val)],
-                categorical_feature=self.config.cat_features,
-                callbacks=[lgb.early_stopping(self.config.early_stopping_trial, verbose=False)]
-            )
+                model = lgb.LGBMRegressor(**params)
+                model.fit(
+                    self.X_train_fit, self.y_train_fit,
+                    eval_set=[(self.X_val, self.y_val)],
+                    categorical_feature=self.config.cat_features,
+                    callbacks=[lgb.early_stopping(self.config.early_stopping_trial, verbose=False)]
+                )
 
-            preds = np.clip(model.predict(self.X_val), 0, None)
-            val_mae = mean_absolute_error(self.y_val, preds)
+                preds = np.clip(model.predict(self.X_val), 0, None)
+                val_mae = mean_absolute_error(self.y_val, preds)
 
-            mlflow.log_metrics({
-                "val_mae":        val_mae,
-                "best_iteration": model.best_iteration_,
-            })
+                mlflow.log_metrics({
+                    "val_mae":        val_mae,
+                    "best_iteration": model.best_iteration_,
+                })
 
-            return val_mae
+                # Mark this trial run as FINISHED
+                mlflow.end_run(status="FINISHED")
+
+                return val_mae
+
+            except Exception:
+                # If this trial fails, mark as FAILED and re-raise
+                try:
+                    mlflow.end_run(status="FAILED")
+                except Exception:
+                    pass
+                raise
 
     def initiate_hyperparameter_tuning(self):
         try:
@@ -357,9 +369,17 @@ class HyperparameterTuner:
                     f"total improvement: {total_improvement_mae:.2f}%"
                 )
 
+                # ---- 9. Explicitly mark the parent run as FINISHED ----
+                mlflow.end_run(status="FINISHED")
+
             return metrics
 
         except Exception as e:
+            # Mark parent run as FAILED if it was still open
+            try:
+                mlflow.end_run(status="FAILED")
+            except Exception:
+                pass
             raise forcast(e, sys)
 
 

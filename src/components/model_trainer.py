@@ -264,9 +264,17 @@ class ModelTrainer:
                     f"improvement: {improvement_mae:.1f}%"
                 )
 
+                # ---- 13. Explicitly mark the run as FINISHED ----
+                mlflow.end_run(status="FINISHED")
+
             return metrics
 
         except Exception as e:
+            # Mark run as FAILED if it was still open
+            try:
+                mlflow.end_run(status="FAILED")
+            except Exception:
+                pass
             raise forcast(e, sys)
 
 

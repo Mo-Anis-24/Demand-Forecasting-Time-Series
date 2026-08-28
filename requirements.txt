@@ -55,5 +55,7 @@ pytest>=8
 #--pymongo
 pymongo
 
+
+dagshub
 # --- Install this project in editable mode ---
 -e .

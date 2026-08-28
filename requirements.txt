@@ -51,5 +51,9 @@ joblib==1.4.2
 # --- Testing ---
 pytest>=8
 
+
+#--pymongo
+pymongo
+
 # --- Install this project in editable mode ---
 -e .

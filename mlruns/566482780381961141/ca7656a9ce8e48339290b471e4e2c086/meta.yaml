@@ -1,0 +1,15 @@
+artifact_uri: file:///Users/anish/Documents/demand forcasting time series /mlruns/566482780381961141/ca7656a9ce8e48339290b471e4e2c086/artifacts
+end_time: 1787892882600
+entry_point_name: ''
+experiment_id: '566482780381961141'
+lifecycle_stage: active
+run_id: ca7656a9ce8e48339290b471e4e2c086
+run_name: trial_3
+run_uuid: ca7656a9ce8e48339290b471e4e2c086
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1787892875565
+status: 3
+tags: []
+user_id: anish

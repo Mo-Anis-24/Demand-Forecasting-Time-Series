@@ -7,10 +7,13 @@ import pickle
 import pandas as pd
 import numpy as np
 import lightgbm as lgb
+import mlflow
+import mlflow.lightgbm
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from src.exception.exception import forcast
 from src.logger import logger
+from src.utils import setup_mlflow
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -47,6 +50,10 @@ class ModelTrainerConfig:
     random_state: int      = 42
     early_stopping_rounds: int = 100
 
+    # MLflow
+    mlflow_experiment: str = "delivery-hourly-forecast"
+    mlflow_run_name: str   = "lgbm_default"
+
 
 class ModelTrainer:
     """
@@ -59,6 +66,7 @@ class ModelTrainer:
       4. Train LightGBM with Poisson objective + early stopping
       5. Evaluate on test set (MAE, RMSE, WAPE)
       6. Save model, metrics, predictions, feature importance
+      7. Log everything to MLflow for experiment tracking
     """
 
     def __init__(self):
@@ -67,6 +75,9 @@ class ModelTrainer:
     def initiate_model_trainer(self):
         try:
             logger.logging.info("Model training started")
+
+            # ---- Configure MLflow ----
+            setup_mlflow(self.config.mlflow_experiment)
 
             # ---- 1. Load features ----
             df = pd.read_parquet(self.config.input_path)
@@ -110,91 +121,148 @@ class ModelTrainer:
                 f"WAPE: {baseline2_wape*100:.2f}%"
             )
 
-            # ---- 6. Train LightGBM ----
-            model = lgb.LGBMRegressor(
-                n_estimators=self.config.n_estimators,
-                learning_rate=self.config.learning_rate,
-                num_leaves=self.config.num_leaves,
-                min_child_samples=self.config.min_child_samples,
-                subsample=self.config.subsample,
-                colsample_bytree=self.config.colsample_bytree,
-                objective=self.config.objective,
-                random_state=self.config.random_state,
-                verbose=-1,
-            )
+            # ==============================================================
+            # MLflow run: train + evaluate + log everything
+            # ==============================================================
+            with mlflow.start_run(run_name=self.config.mlflow_run_name):
 
-            model.fit(
-                X_train, y_train,
-                eval_set=[(X_test, y_test)],
-                categorical_feature=self.config.cat_features,
-                callbacks=[
-                    lgb.early_stopping(self.config.early_stopping_rounds),
-                    lgb.log_evaluation(200),
-                ],
-            )
-            logger.logging.info(f"Model trained — best iteration: {model.best_iteration_}")
+                # ---- Log parameters ----
+                mlflow.log_params({
+                    "model_type":         "LightGBM",
+                    "objective":          self.config.objective,
+                    "n_estimators":       self.config.n_estimators,
+                    "learning_rate":      self.config.learning_rate,
+                    "num_leaves":         self.config.num_leaves,
+                    "min_child_samples":  self.config.min_child_samples,
+                    "subsample":          self.config.subsample,
+                    "colsample_bytree":   self.config.colsample_bytree,
+                    "early_stopping":     self.config.early_stopping_rounds,
+                    "random_state":       self.config.random_state,
+                    "test_days":          self.config.test_days,
+                    "n_features":         len(features),
+                    "n_train_rows":       len(train),
+                    "n_test_rows":        len(test),
+                })
 
-            # ---- 7. Evaluate ----
-            pred = np.clip(model.predict(X_test), 0, None)
-            lgbm_mae  = mean_absolute_error(y_test, pred)
-            lgbm_rmse = np.sqrt(mean_squared_error(y_test, pred))
-            lgbm_wape = np.abs(y_test - pred).sum() / y_test.sum()
+                # ---- Log tags (for filtering runs later) ----
+                mlflow.set_tags({
+                    "stage":       "baseline_model",
+                    "framework":   "lightgbm",
+                    "target":      "hourly_orders",
+                    "granularity": "hub_x_hour",
+                    "objective":   self.config.objective,
+                })
 
-            improvement_mae  = (1 - lgbm_mae  / baseline_mae)  * 100
-            improvement_wape = (1 - lgbm_wape / baseline_wape) * 100
+                # ---- 6. Train LightGBM ----
+                model = lgb.LGBMRegressor(
+                    n_estimators=self.config.n_estimators,
+                    learning_rate=self.config.learning_rate,
+                    num_leaves=self.config.num_leaves,
+                    min_child_samples=self.config.min_child_samples,
+                    subsample=self.config.subsample,
+                    colsample_bytree=self.config.colsample_bytree,
+                    objective=self.config.objective,
+                    random_state=self.config.random_state,
+                    verbose=-1,
+                )
 
-            logger.logging.info(
-                f"LightGBM — MAE: {lgbm_mae:.3f}, RMSE: {lgbm_rmse:.3f}, "
-                f"WAPE: {lgbm_wape*100:.2f}%"
-            )
-            logger.logging.info(
-                f"Improvement over seasonal-naive — "
-                f"MAE: {improvement_mae:.1f}%, WAPE: {improvement_wape:.1f}%"
-            )
+                model.fit(
+                    X_train, y_train,
+                    eval_set=[(X_test, y_test)],
+                    categorical_feature=self.config.cat_features,
+                    callbacks=[
+                        lgb.early_stopping(self.config.early_stopping_rounds),
+                        lgb.log_evaluation(200),
+                    ],
+                )
+                logger.logging.info(f"Model trained — best iteration: {model.best_iteration_}")
 
-            # ---- 8. Save model ----
-            os.makedirs(os.path.dirname(self.config.model_path), exist_ok=True)
-            with open(self.config.model_path, "wb") as f:
-                pickle.dump(model, f)
-            logger.logging.info(f"Model saved to {self.config.model_path}")
+                # ---- 7. Evaluate ----
+                pred = np.clip(model.predict(X_test), 0, None)
+                lgbm_mae  = mean_absolute_error(y_test, pred)
+                lgbm_rmse = np.sqrt(mean_squared_error(y_test, pred))
+                lgbm_wape = np.abs(y_test - pred).sum() / y_test.sum()
 
-            # ---- 9. Save metrics summary ----
-            metrics = {
-                "test_period_days":       self.config.test_days,
-                "train_rows":             len(train),
-                "test_rows":              len(test),
-                "n_features":             len(features),
-                "best_iteration":         model.best_iteration_,
-                "baseline_seasonal_mae":  round(baseline_mae, 4),
-                "baseline_seasonal_wape": round(baseline_wape * 100, 2),
-                "baseline_rolling_mae":   round(baseline2_mae, 4),
-                "baseline_rolling_wape":  round(baseline2_wape * 100, 2),
-                "lgbm_mae":               round(lgbm_mae, 4),
-                "lgbm_rmse":              round(lgbm_rmse, 4),
-                "lgbm_wape":              round(lgbm_wape * 100, 2),
-                "improvement_mae_pct":    round(improvement_mae, 2),
-                "improvement_wape_pct":   round(improvement_wape, 2),
-            }
-            with open(self.config.metrics_path, "w") as f:
-                for k, v in metrics.items():
-                    f.write(f"{k}: {v}\n")
-            logger.logging.info(f"Metrics saved to {self.config.metrics_path}")
+                improvement_mae  = (1 - lgbm_mae  / baseline_mae)  * 100
+                improvement_wape = (1 - lgbm_wape / baseline_wape) * 100
 
-            # ---- 10. Save test predictions (for downstream analysis / dashboard) ----
-            test_eval = test[["hub_id", "hub_name", "ts", "orders"]].copy()
-            test_eval["pred"] = pred
-            test_eval.to_csv(self.config.predictions_path, index=False)
-            logger.logging.info(f"Predictions saved to {self.config.predictions_path}")
+                logger.logging.info(
+                    f"LightGBM — MAE: {lgbm_mae:.3f}, RMSE: {lgbm_rmse:.3f}, "
+                    f"WAPE: {lgbm_wape*100:.2f}%"
+                )
+                logger.logging.info(
+                    f"Improvement over seasonal-naive — "
+                    f"MAE: {improvement_mae:.1f}%, WAPE: {improvement_wape:.1f}%"
+                )
 
-            # ---- 11. Save feature importance ----
-            imp = pd.DataFrame({
-                "feature": features,
-                "importance": model.feature_importances_,
-            }).sort_values("importance", ascending=False)
-            imp.to_csv(self.config.importance_path, index=False)
-            logger.logging.info(
-                f"Feature importance saved — top 5: {imp.head(5)['feature'].tolist()}"
-            )
+                # ---- Log metrics to MLflow ----
+                mlflow.log_metrics({
+                    "baseline_seasonal_mae":  baseline_mae,
+                    "baseline_seasonal_wape": baseline_wape * 100,
+                    "baseline_rolling_mae":   baseline2_mae,
+                    "baseline_rolling_wape":  baseline2_wape * 100,
+                    "test_mae":               lgbm_mae,
+                    "test_rmse":              lgbm_rmse,
+                    "test_wape":              lgbm_wape * 100,
+                    "improvement_mae_pct":    improvement_mae,
+                    "improvement_wape_pct":   improvement_wape,
+                    "best_iteration":         model.best_iteration_,
+                })
+
+                # ---- 8. Save model locally ----
+                os.makedirs(os.path.dirname(self.config.model_path), exist_ok=True)
+                with open(self.config.model_path, "wb") as f:
+                    pickle.dump(model, f)
+                logger.logging.info(f"Model saved to {self.config.model_path}")
+
+                # ---- 9. Save metrics summary ----
+                metrics = {
+                    "test_period_days":       self.config.test_days,
+                    "train_rows":             len(train),
+                    "test_rows":              len(test),
+                    "n_features":             len(features),
+                    "best_iteration":         model.best_iteration_,
+                    "baseline_seasonal_mae":  round(baseline_mae, 4),
+                    "baseline_seasonal_wape": round(baseline_wape * 100, 2),
+                    "baseline_rolling_mae":   round(baseline2_mae, 4),
+                    "baseline_rolling_wape":  round(baseline2_wape * 100, 2),
+                    "lgbm_mae":               round(lgbm_mae, 4),
+                    "lgbm_rmse":              round(lgbm_rmse, 4),
+                    "lgbm_wape":              round(lgbm_wape * 100, 2),
+                    "improvement_mae_pct":    round(improvement_mae, 2),
+                    "improvement_wape_pct":   round(improvement_wape, 2),
+                }
+                with open(self.config.metrics_path, "w") as f:
+                    for k, v in metrics.items():
+                        f.write(f"{k}: {v}\n")
+                logger.logging.info(f"Metrics saved to {self.config.metrics_path}")
+
+                # ---- 10. Save test predictions ----
+                test_eval = test[["hub_id", "hub_name", "ts", "orders"]].copy()
+                test_eval["pred"] = pred
+                test_eval.to_csv(self.config.predictions_path, index=False)
+                logger.logging.info(f"Predictions saved to {self.config.predictions_path}")
+
+                # ---- 11. Save feature importance ----
+                imp = pd.DataFrame({
+                    "feature": features,
+                    "importance": model.feature_importances_,
+                }).sort_values("importance", ascending=False)
+                imp.to_csv(self.config.importance_path, index=False)
+                logger.logging.info(
+                    f"Feature importance saved — top 5: {imp.head(5)['feature'].tolist()}"
+                )
+
+                # ---- 12. Log all artifacts to MLflow ----
+                mlflow.lightgbm.log_model(model, "model")
+                mlflow.log_artifact(self.config.metrics_path,     artifact_path="metrics")
+                mlflow.log_artifact(self.config.predictions_path, artifact_path="predictions")
+                mlflow.log_artifact(self.config.importance_path,  artifact_path="importance")
+
+                logger.logging.info(
+                    f"MLflow run complete — test MAE: {lgbm_mae:.3f}, "
+                    f"improvement: {improvement_mae:.1f}%"
+                )
 
             return metrics
 

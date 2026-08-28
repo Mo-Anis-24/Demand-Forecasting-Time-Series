@@ -9,10 +9,13 @@ import pandas as pd
 import numpy as np
 import lightgbm as lgb
 import optuna
+import mlflow
+import mlflow.lightgbm
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from src.exception.exception import forcast
 from src.logger import logger
+from src.utils import setup_mlflow
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -53,6 +56,10 @@ class HyperparameterTuningConfig:
     early_stopping_trial:  int = 50       # for trials during search
     early_stopping_final:  int = 100      # for final model training
 
+    # MLflow
+    mlflow_experiment: str = "delivery-hourly-forecast"
+    mlflow_parent_run:  str = "optuna_tuning"
+
 
 class HyperparameterTuner:
     """
@@ -65,16 +72,17 @@ class HyperparameterTuner:
 
     Workflow:
       1. Load features and build 3-way time-ordered split
-      2. Run N Optuna trials, minimizing validation MAE
+      2. Run N Optuna trials (each logged as a nested MLflow run)
       3. Train final model on train+val with best params, evaluate on test
       4. Save model, best params, metrics, predictions, feature importance, study
+      5. Log everything to MLflow — parent run + N nested trial runs
     """
 
     def __init__(self):
         self.config = HyperparameterTuningConfig()
 
         # Populated when initiate() runs — kept as instance state so
-        # the Optuna objective function can access them via closure
+        # the Optuna objective function can access them
         self.X_train_fit = None
         self.y_train_fit = None
         self.X_val       = None
@@ -83,6 +91,7 @@ class HyperparameterTuner:
     def _objective(self, trial):
         """
         One Optuna trial: sample hyperparameters, train, return val MAE.
+        Each trial is logged as a nested MLflow run.
         """
         params = {
             "objective":         "poisson",
@@ -100,20 +109,39 @@ class HyperparameterTuner:
             "reg_lambda":        trial.suggest_float("reg_lambda", 1e-4, 10.0, log=True),
         }
 
-        model = lgb.LGBMRegressor(**params)
-        model.fit(
-            self.X_train_fit, self.y_train_fit,
-            eval_set=[(self.X_val, self.y_val)],
-            categorical_feature=self.config.cat_features,
-            callbacks=[lgb.early_stopping(self.config.early_stopping_trial, verbose=False)]
-        )
+        # ---- Nested MLflow run for this trial ----
+        with mlflow.start_run(run_name=f"trial_{trial.number}", nested=True):
+            mlflow.log_params(params)
+            mlflow.set_tags({
+                "stage":        "tuning_trial",
+                "trial_number": str(trial.number),
+                "framework":    "lightgbm",
+            })
 
-        preds = np.clip(model.predict(self.X_val), 0, None)
-        return mean_absolute_error(self.y_val, preds)
+            model = lgb.LGBMRegressor(**params)
+            model.fit(
+                self.X_train_fit, self.y_train_fit,
+                eval_set=[(self.X_val, self.y_val)],
+                categorical_feature=self.config.cat_features,
+                callbacks=[lgb.early_stopping(self.config.early_stopping_trial, verbose=False)]
+            )
+
+            preds = np.clip(model.predict(self.X_val), 0, None)
+            val_mae = mean_absolute_error(self.y_val, preds)
+
+            mlflow.log_metrics({
+                "val_mae":        val_mae,
+                "best_iteration": model.best_iteration_,
+            })
+
+            return val_mae
 
     def initiate_hyperparameter_tuning(self):
         try:
             logger.logging.info("Hyperparameter tuning started")
+
+            # ---- Configure MLflow ----
+            setup_mlflow(self.config.mlflow_experiment)
 
             # ---- 1. Load features ----
             df = pd.read_parquet(self.config.input_path)
@@ -146,134 +174,188 @@ class HyperparameterTuner:
 
             logger.logging.info(f"Using {len(features)} features")
 
-            # ---- 4. Run Optuna search ----
-            logger.logging.info(f"Starting Optuna search — {self.config.n_trials} trials")
+            # ==============================================================
+            # Parent MLflow run — child trials nest under this
+            # ==============================================================
+            with mlflow.start_run(run_name=self.config.mlflow_parent_run):
 
-            study = optuna.create_study(
-                direction="minimize",
-                sampler=optuna.samplers.TPESampler(seed=self.config.random_state),
-            )
-            study.optimize(
-                self._objective,
-                n_trials=self.config.n_trials,
-                show_progress_bar=True,
-            )
+                mlflow.set_tags({
+                    "stage":     "hyperparameter_search",
+                    "framework": "lightgbm+optuna",
+                    "sampler":   "TPE",
+                })
 
-            best_val_mae = study.best_value
-            best_params  = study.best_params
-            logger.logging.info(f"Search complete — best validation MAE: {best_val_mae:.4f}")
-            logger.logging.info(f"Best params: {best_params}")
+                mlflow.log_params({
+                    "n_trials":              self.config.n_trials,
+                    "test_days":             self.config.test_days,
+                    "validation_days":       self.config.validation_days,
+                    "early_stopping_trial":  self.config.early_stopping_trial,
+                    "early_stopping_final":  self.config.early_stopping_final,
+                    "n_features":            len(features),
+                    "n_train_fit_rows":      len(train_fit),
+                    "n_val_rows":            len(val),
+                    "n_test_rows":           len(test),
+                    "random_state":          self.config.random_state,
+                })
 
-            # ---- 5. Train final model on train+val with best params ----
-            final_params = best_params.copy()
-            final_params.update({
-                "objective":    "poisson",
-                "metric":       "mae",
-                "verbose":      -1,
-                "random_state": self.config.random_state,
-                "n_estimators": 3000,
-            })
+                # ---- 4. Run Optuna search ----
+                logger.logging.info(f"Starting Optuna search — {self.config.n_trials} trials")
 
-            final_model = lgb.LGBMRegressor(**final_params)
-            final_model.fit(
-                X_train_full, y_train_full,
-                eval_set=[(X_test, y_test)],
-                categorical_feature=self.config.cat_features,
-                callbacks=[
-                    lgb.early_stopping(self.config.early_stopping_final),
-                    lgb.log_evaluation(200),
-                ]
-            )
-            logger.logging.info(
-                f"Final model trained — best iteration: {final_model.best_iteration_}"
-            )
+                study = optuna.create_study(
+                    direction="minimize",
+                    sampler=optuna.samplers.TPESampler(seed=self.config.random_state),
+                )
+                study.optimize(
+                    self._objective,
+                    n_trials=self.config.n_trials,
+                    show_progress_bar=True,
+                )
 
-            # ---- 6. Evaluate on test set ----
-            pred = np.clip(final_model.predict(X_test), 0, None)
+                best_val_mae = study.best_value
+                best_params  = study.best_params
+                logger.logging.info(f"Search complete — best validation MAE: {best_val_mae:.4f}")
+                logger.logging.info(f"Best params: {best_params}")
 
-            tuned_mae  = mean_absolute_error(y_test, pred)
-            tuned_rmse = np.sqrt(mean_squared_error(y_test, pred))
-            tuned_wape = np.abs(y_test - pred).sum() / y_test.sum()
+                # ---- Log best params from search on parent run ----
+                for k, v in best_params.items():
+                    mlflow.log_param(f"best_{k}", v)
+                mlflow.log_metric("best_val_mae", best_val_mae)
 
-            # Reference values from Notebook 3 / model_trainer for comparison
-            baseline_mae  = 2.220
-            baseline_wape = 43.41
-            default_mae   = 1.649
-            default_wape  = 32.25
+                # ---- 5. Train final model on train+val with best params ----
+                final_params = best_params.copy()
+                final_params.update({
+                    "objective":    "poisson",
+                    "metric":       "mae",
+                    "verbose":      -1,
+                    "random_state": self.config.random_state,
+                    "n_estimators": 3000,
+                })
 
-            tuning_improvement_mae  = (1 - tuned_mae  / default_mae)  * 100
-            tuning_improvement_wape = (1 - tuned_wape * 100 / default_wape) * 100
-            total_improvement_mae   = (1 - tuned_mae  / baseline_mae) * 100
-            total_improvement_wape  = (1 - tuned_wape * 100 / baseline_wape) * 100
+                final_model = lgb.LGBMRegressor(**final_params)
+                final_model.fit(
+                    X_train_full, y_train_full,
+                    eval_set=[(X_test, y_test)],
+                    categorical_feature=self.config.cat_features,
+                    callbacks=[
+                        lgb.early_stopping(self.config.early_stopping_final),
+                        lgb.log_evaluation(200),
+                    ]
+                )
+                logger.logging.info(
+                    f"Final model trained — best iteration: {final_model.best_iteration_}"
+                )
 
-            logger.logging.info(
-                f"Tuned LightGBM — MAE: {tuned_mae:.3f}, RMSE: {tuned_rmse:.3f}, "
-                f"WAPE: {tuned_wape*100:.2f}%"
-            )
-            logger.logging.info(
-                f"Improvement over default LightGBM — "
-                f"MAE: {tuning_improvement_mae:.2f}%, WAPE: {tuning_improvement_wape:.2f}%"
-            )
-            logger.logging.info(
-                f"Total improvement over seasonal-naive — "
-                f"MAE: {total_improvement_mae:.2f}%, WAPE: {total_improvement_wape:.2f}%"
-            )
+                # ---- 6. Evaluate on test set ----
+                pred = np.clip(final_model.predict(X_test), 0, None)
 
-            # ---- 7. Save artifacts ----
-            os.makedirs(os.path.dirname(self.config.model_path), exist_ok=True)
+                tuned_mae  = mean_absolute_error(y_test, pred)
+                tuned_rmse = np.sqrt(mean_squared_error(y_test, pred))
+                tuned_wape = np.abs(y_test - pred).sum() / y_test.sum()
 
-            # Model
-            with open(self.config.model_path, "wb") as f:
-                pickle.dump(final_model, f)
-            logger.logging.info(f"Tuned model saved to {self.config.model_path}")
+                # Reference values from Notebook 3 / model_trainer for comparison
+                baseline_mae  = 2.220
+                baseline_wape = 43.41
+                default_mae   = 1.649
+                default_wape  = 32.25
 
-            # Best params
-            with open(self.config.best_params_path, "w") as f:
-                json.dump(best_params, f, indent=2)
-            logger.logging.info(f"Best params saved to {self.config.best_params_path}")
+                tuning_improvement_mae  = (1 - tuned_mae  / default_mae)  * 100
+                tuning_improvement_wape = (1 - tuned_wape * 100 / default_wape) * 100
+                total_improvement_mae   = (1 - tuned_mae  / baseline_mae) * 100
+                total_improvement_wape  = (1 - tuned_wape * 100 / baseline_wape) * 100
 
-            # Metrics summary
-            metrics = {
-                "n_trials":                self.config.n_trials,
-                "best_val_mae":            round(best_val_mae, 4),
-                "best_iteration":          final_model.best_iteration_,
-                "baseline_mae":            baseline_mae,
-                "baseline_wape":           baseline_wape,
-                "default_lgbm_mae":        default_mae,
-                "default_lgbm_wape":       default_wape,
-                "tuned_lgbm_mae":          round(tuned_mae, 4),
-                "tuned_lgbm_rmse":         round(tuned_rmse, 4),
-                "tuned_lgbm_wape":         round(tuned_wape * 100, 2),
-                "tuning_improvement_mae":  round(tuning_improvement_mae, 2),
-                "tuning_improvement_wape": round(tuning_improvement_wape, 2),
-                "total_improvement_mae":   round(total_improvement_mae, 2),
-                "total_improvement_wape":  round(total_improvement_wape, 2),
-            }
-            with open(self.config.metrics_path, "w") as f:
-                for k, v in metrics.items():
-                    f.write(f"{k}: {v}\n")
-            logger.logging.info(f"Metrics saved to {self.config.metrics_path}")
+                logger.logging.info(
+                    f"Tuned LightGBM — MAE: {tuned_mae:.3f}, RMSE: {tuned_rmse:.3f}, "
+                    f"WAPE: {tuned_wape*100:.2f}%"
+                )
+                logger.logging.info(
+                    f"Improvement over default LightGBM — "
+                    f"MAE: {tuning_improvement_mae:.2f}%, WAPE: {tuning_improvement_wape:.2f}%"
+                )
+                logger.logging.info(
+                    f"Total improvement over seasonal-naive — "
+                    f"MAE: {total_improvement_mae:.2f}%, WAPE: {total_improvement_wape:.2f}%"
+                )
 
-            # Test predictions
-            test_eval = test[["hub_id", "hub_name", "ts", "orders"]].copy()
-            test_eval["pred"] = pred
-            test_eval.to_csv(self.config.predictions_path, index=False)
-            logger.logging.info(f"Predictions saved to {self.config.predictions_path}")
+                # ---- Log final metrics on parent run ----
+                mlflow.log_metrics({
+                    "tuned_test_mae":          tuned_mae,
+                    "tuned_test_rmse":         tuned_rmse,
+                    "tuned_test_wape":         tuned_wape * 100,
+                    "final_best_iteration":    final_model.best_iteration_,
+                    "tuning_improvement_mae":  tuning_improvement_mae,
+                    "tuning_improvement_wape": tuning_improvement_wape,
+                    "total_improvement_mae":   total_improvement_mae,
+                    "total_improvement_wape":  total_improvement_wape,
+                })
 
-            # Feature importance
-            imp = pd.DataFrame({
-                "feature":    features,
-                "importance": final_model.feature_importances_,
-            }).sort_values("importance", ascending=False)
-            imp.to_csv(self.config.importance_path, index=False)
-            logger.logging.info(
-                f"Feature importance saved — top 5: {imp.head(5)['feature'].tolist()}"
-            )
+                # ---- 7. Save artifacts locally ----
+                os.makedirs(os.path.dirname(self.config.model_path), exist_ok=True)
 
-            # Optuna study (for later analysis / visualization)
-            with open(self.config.study_path, "wb") as f:
-                pickle.dump(study, f)
-            logger.logging.info(f"Optuna study saved to {self.config.study_path}")
+                # Model
+                with open(self.config.model_path, "wb") as f:
+                    pickle.dump(final_model, f)
+                logger.logging.info(f"Tuned model saved to {self.config.model_path}")
+
+                # Best params
+                with open(self.config.best_params_path, "w") as f:
+                    json.dump(best_params, f, indent=2)
+                logger.logging.info(f"Best params saved to {self.config.best_params_path}")
+
+                # Metrics summary
+                metrics = {
+                    "n_trials":                self.config.n_trials,
+                    "best_val_mae":            round(best_val_mae, 4),
+                    "best_iteration":          final_model.best_iteration_,
+                    "baseline_mae":            baseline_mae,
+                    "baseline_wape":           baseline_wape,
+                    "default_lgbm_mae":        default_mae,
+                    "default_lgbm_wape":       default_wape,
+                    "tuned_lgbm_mae":          round(tuned_mae, 4),
+                    "tuned_lgbm_rmse":         round(tuned_rmse, 4),
+                    "tuned_lgbm_wape":         round(tuned_wape * 100, 2),
+                    "tuning_improvement_mae":  round(tuning_improvement_mae, 2),
+                    "tuning_improvement_wape": round(tuning_improvement_wape, 2),
+                    "total_improvement_mae":   round(total_improvement_mae, 2),
+                    "total_improvement_wape":  round(total_improvement_wape, 2),
+                }
+                with open(self.config.metrics_path, "w") as f:
+                    for k, v in metrics.items():
+                        f.write(f"{k}: {v}\n")
+                logger.logging.info(f"Metrics saved to {self.config.metrics_path}")
+
+                # Test predictions
+                test_eval = test[["hub_id", "hub_name", "ts", "orders"]].copy()
+                test_eval["pred"] = pred
+                test_eval.to_csv(self.config.predictions_path, index=False)
+                logger.logging.info(f"Predictions saved to {self.config.predictions_path}")
+
+                # Feature importance
+                imp = pd.DataFrame({
+                    "feature":    features,
+                    "importance": final_model.feature_importances_,
+                }).sort_values("importance", ascending=False)
+                imp.to_csv(self.config.importance_path, index=False)
+                logger.logging.info(
+                    f"Feature importance saved — top 5: {imp.head(5)['feature'].tolist()}"
+                )
+
+                # Optuna study
+                with open(self.config.study_path, "wb") as f:
+                    pickle.dump(study, f)
+                logger.logging.info(f"Optuna study saved to {self.config.study_path}")
+
+                # ---- 8. Log all artifacts + model to MLflow ----
+                mlflow.lightgbm.log_model(final_model, "tuned_model")
+                mlflow.log_artifact(self.config.best_params_path, artifact_path="params")
+                mlflow.log_artifact(self.config.metrics_path,     artifact_path="metrics")
+                mlflow.log_artifact(self.config.predictions_path, artifact_path="predictions")
+                mlflow.log_artifact(self.config.importance_path,  artifact_path="importance")
+                mlflow.log_artifact(self.config.study_path,       artifact_path="optuna")
+
+                logger.logging.info(
+                    f"MLflow parent run complete — tuned MAE: {tuned_mae:.3f}, "
+                    f"total improvement: {total_improvement_mae:.2f}%"
+                )
 
             return metrics
 

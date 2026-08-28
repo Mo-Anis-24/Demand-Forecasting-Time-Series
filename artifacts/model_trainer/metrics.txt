@@ -1,0 +1,14 @@
+test_period_days: 14
+train_rows: 57356
+test_rows: 8736
+n_features: 32
+best_iteration: 670
+baseline_seasonal_mae: 2.2199
+baseline_seasonal_wape: 43.41
+baseline_rolling_mae: 5.6496
+baseline_rolling_wape: 110.49
+lgbm_mae: 1.6396
+lgbm_rmse: 3.1822
+lgbm_wape: 32.07
+improvement_mae_pct: 26.14
+improvement_wape_pct: 26.14

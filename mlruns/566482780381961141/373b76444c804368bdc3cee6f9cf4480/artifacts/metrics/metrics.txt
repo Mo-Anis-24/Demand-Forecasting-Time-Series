@@ -1,0 +1,14 @@
+n_trials: 30
+best_val_mae: 1.8279
+best_iteration: 879
+baseline_mae: 2.22
+baseline_wape: 43.41
+default_lgbm_mae: 1.649
+default_lgbm_wape: 32.25
+tuned_lgbm_mae: 1.6574
+tuned_lgbm_rmse: 3.2082
+tuned_lgbm_wape: 32.41
+tuning_improvement_mae: -0.51
+tuning_improvement_wape: -0.51
+total_improvement_mae: 25.34
+total_improvement_wape: 25.33

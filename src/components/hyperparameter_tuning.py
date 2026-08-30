@@ -15,7 +15,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from src.exception.exception import forcast
 from src.logger import logger
-from src.utils import setup_mlflow
+from src.utils import setup_mlflow, save_object
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -75,7 +75,8 @@ class HyperparameterTuner:
       2. Run N Optuna trials (each logged as a nested MLflow run)
       3. Train final model on train+val with best params, evaluate on test
       4. Save model, best params, metrics, predictions, feature importance, study
-      5. Log everything to MLflow — parent run + N nested trial runs
+      5. Save best model to final_model/ for production use
+      6. Log everything to MLflow — parent run + N nested trial runs
     """
 
     def __init__(self):
@@ -307,6 +308,9 @@ class HyperparameterTuner:
                 with open(self.config.model_path, "wb") as f:
                     pickle.dump(final_model, f)
                 logger.logging.info(f"Tuned model saved to {self.config.model_path}")
+
+                # Save best model to final_model/ for production
+                save_object(str(PROJECT_ROOT / "final_model" / "model.pkl"), final_model)
 
                 # Best params
                 with open(self.config.best_params_path, "w") as f:

@@ -54,7 +54,11 @@ pytest>=8
 
 #--pymongo
 pymongo
-
+fastapi
+uvicorn
+python-multipart
+jinja2
+python-dotenv
 
 dagshub
 # --- Install this project in editable mode ---

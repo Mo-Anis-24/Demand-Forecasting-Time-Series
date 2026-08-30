@@ -17,4 +17,5 @@ src/exception/exception.py
 src/logger/__init__.py
 src/logger/logger.py
 src/pipeline/__init__.py
+src/pipeline/batch_pipeline.py
 src/pipeline/train_pipeline.py

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Demand Forecast</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <style>
+        body { padding: 30px; background: #f8f9fa; }
+        .card { max-width: 700px; margin: 0 auto; }
+        .hub-info { background: #e9ecef; padding: 10px 15px; border-radius: 8px; margin-bottom: 15px; }
+        .hub-info span { font-weight: bold; color: #0d6efd; }
+    </style>
+</head>
+<body>
+    <div class="card shadow p-4">
+        <h2 class="mb-3">Delivery Demand Forecast</h2>
+        <p class="text-muted">Select a hub and time to predict hourly order demand</p>
+
+        <form action="/predict_form" method="post">
+            <div class="mb-3">
+                <label class="form-label"><strong>Select Hub</strong></label>
+                <select name="hub_id" id="hubSelect" class="form-select form-select-lg" onchange="updateHubInfo()">
+                    {% for hid, info in hubs.items() %}
+                    <option value="{{ hid }}">Hub {{ hid }} - {{ info.hub_name }} ({{ info.hub_city }})</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="hub-info" id="hubInfo">
+                <small>City: <span id="infoCity">-</span> | State: <span id="infoState">-</span> | Segment: <span id="infoSegment">-</span> | Channel: <span id="infoChannel">-</span></small>
+            </div>
+
+            <hr>
+            <h5>When do you want to predict?</h5>
+            <div class="row mb-3">
+                <div class="col-md-3">
+                    <label class="form-label">Hour</label>
+                    <select name="hour" class="form-select">
+                        <option value="0">12 AM</option>
+                        <option value="6">6 AM</option>
+                        <option value="9">9 AM</option>
+                        <option value="12">12 PM</option>
+                        <option value="14">2 PM</option>
+                        <option value="16">4 PM</option>
+                        <option value="18">6 PM</option>
+                        <option value="19" selected>7 PM</option>
+                        <option value="20">8 PM</option>
+                        <option value="21">9 PM</option>
+                        <option value="22">10 PM</option>
+                        <option value="23">11 PM</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Day of Week</label>
+                    <select name="dow" class="form-select">
+                        <option value="0">Monday</option>
+                        <option value="1">Tuesday</option>
+                        <option value="2">Wednesday</option>
+                        <option value="3">Thursday</option>
+                        <option value="4" selected>Friday</option>
+                        <option value="5">Saturday</option>
+                        <option value="6">Sunday</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Day</label>
+                    <input type="number" name="day" class="form-control" value="15" min="1" max="31" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Month</label>
+                    <select name="month" class="form-select">
+                        <option value="1">January</option>
+                        <option value="2">February</option>
+                        <option value="3" selected>March</option>
+                        <option value="4">April</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">Is Weekend?</label>
+                <select name="is_weekend" class="form-select" style="max-width: 200px;">
+                    <option value="0" selected>No</option>
+                    <option value="1">Yes</option>
+                </select>
+            </div>
+
+            <hr>
+            <h5>Recent Order History</h5>
+            <p class="text-muted small">How many orders did this hub get recently?</p>
+
+            <div class="row mb-3">
+                <div class="col-md-3">
+                    <label class="form-label">1 hour ago</label>
+                    <input type="number" name="lag_1" class="form-control" value="5" step="0.1" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">24 hours ago</label>
+                    <input type="number" name="lag_24" class="form-control" value="4" step="0.1" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">1 week ago</label>
+                    <input type="number" name="lag_168" class="form-control" value="6" step="0.1" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">2 weeks ago</label>
+                    <input type="number" name="lag_336" class="form-control" value="5" step="0.1" required>
+                </div>
+            </div>
+
+            <div class="row mb-3">
+                <div class="col-md-6">
+                    <label class="form-label">Avg orders/hour (last 24h)</label>
+                    <input type="number" name="roll_mean_24" class="form-control" value="3.5" step="0.01" required>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Avg orders/hour (last week)</label>
+                    <input type="number" name="roll_mean_168" class="form-control" value="2.8" step="0.01" required>
+                </div>
+            </div>
+
+            <button type="submit" class="btn btn-primary btn-lg w-100 mt-3">Predict Demand</button>
+        </form>
+    </div>
+
+    <script>
+        const hubData = {
+            {% for hid, info in hubs.items() %}
+            "{{ hid }}": {"city": "{{ info.hub_city }}", "state": "{{ info.hub_state }}", "segment": "{{ info.hub_dominant_segment }}", "channel": "{{ info.hub_dominant_channel }}"},
+            {% endfor %}
+        };
+        function updateHubInfo() {
+            const hub = hubData[document.getElementById('hubSelect').value];
+            if (hub) {
+                document.getElementById('infoCity').textContent = hub.city;
+                document.getElementById('infoState').textContent = hub.state;
+                document.getElementById('infoSegment').textContent = hub.segment;
+                document.getElementById('infoChannel').textContent = hub.channel;
+            }
+        }
+        updateHubInfo();
+    </script>
+</body>
+</html>

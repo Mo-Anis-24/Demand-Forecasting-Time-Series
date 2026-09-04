@@ -50,11 +50,17 @@ ENV/
 # Machine Learning Models
 # =========================
 
+# =========================
+# Machine Learning Models
+# =========================
+
 # Ignore generated model files
 *.pkl
 *.pickle
 *.joblib
 
+# But keep production model files
+!final_model/*.pkl
 
 # =========================
 # Logs

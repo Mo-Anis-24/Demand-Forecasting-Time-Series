@@ -77,5 +77,6 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/delivery-forecast:latest
-            ghcr.io/${{ github.repository_owner }}/delivery-forecast:${{ github.sha }}
+          tags: |
+            ghcr.io/mo-anis-24/delivery-forecast:latest
+            ghcr.io/mo-anis-24/delivery-forecast:${{ github.sha }}

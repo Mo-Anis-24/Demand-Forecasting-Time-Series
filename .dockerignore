@@ -1,0 +1,14 @@
+venv/
+mlruns/
+logs/
+__pycache__/
+*.egg-info/
+.git/
+.gitignore
+notebook/
+data/
+artifacts/model_trainer/
+artifacts/hyperparameter_tuning/
+artifacts/data_ingestion/
+*.pyc
+.DS_Store.env

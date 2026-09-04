@@ -11,7 +11,7 @@ plotly==5.22.0
 
 # --- Modeling ---
 scikit-learn==1.5.0
-#lightgbm==4.3.0
+lightgbm==4.3.0
 xgboost==2.0.3
 optuna==3.6.1
 shap==0.45.1
@@ -62,4 +62,4 @@ python-dotenv
 
 dagshub
 # --- Install this project in editable mode ---
--e .
+setuptools<81

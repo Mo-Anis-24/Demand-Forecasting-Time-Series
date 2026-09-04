@@ -40,10 +40,26 @@ async def index():
 
 @app.get("/train")
 async def train_route():
-    return Response(
-        "Training requires raw CSVs in data/raw/. "
-        "Run: python -m src.pipeline.train_pipeline"
-    )
+    try:
+        from src.components.model_trainer import ModelTrainer
+        from src.components.hyperparameter_tuning import HyperparameterTuner
+
+        # Train default model
+        trainer = ModelTrainer()
+        trainer_metrics = trainer.initiate_model_trainer()
+
+        # Tune hyperparameters
+        tuner = HyperparameterTuner()
+        tuner_metrics = tuner.initiate_hyperparameter_tuning()
+
+        return Response(
+            f"Training complete. "
+            f"Default MAE: {trainer_metrics['lgbm_mae']}, "
+            f"Tuned MAE: {tuner_metrics['tuned_lgbm_mae']}, "
+            f"Improvement: {tuner_metrics['total_improvement_mae']}%"
+        )
+    except Exception as e:
+        raise forcast(e, sys)
 
 
 @app.post("/predict")

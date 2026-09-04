@@ -14,7 +14,7 @@ COPY src/ src/
 COPY app.py .
 COPY templates/ templates/
 COPY final_model/ final_model/
-COPY artifacts/data_transformation/features.parquet artifacts/data_transformation/features.parquet
+COPY data_for_docker/features.parquet artifacts/data_transformation/features.parquet
 
 RUN pip install -e .
 

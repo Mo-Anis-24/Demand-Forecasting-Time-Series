@@ -1,0 +1,81 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgomp1
+
+      - name: Install Python dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Test imports
+        run: |
+          python -c "from src.utils import load_object, save_object, setup_mlflow; print('Utils OK')"
+          python -c "from src.components.data_transformation import DataTransformation; print('Transformation OK')"
+          python -c "from src.components.model_trainer import ModelTrainer; print('ModelTrainer OK')"
+          python -c "from src.components.hyperparameter_tuning import HyperparameterTuner; print('Tuner OK')"
+          python -c "from src.pipeline.train_pipeline import TrainPipeline; print('Pipeline OK')"
+
+      - name: Check model files exist
+        run: |
+          test -f final_model/model.pkl && echo "model.pkl exists" || exit 1
+          test -f final_model/transformation.pkl && echo "transformation.pkl exists" || exit 1
+          echo "All model files present"
+
+      - name: Test prediction works
+        run: |
+          python -c "
+          import pickle
+          with open('final_model/model.pkl', 'rb') as f:
+              model = pickle.load(f)
+          print('Model loaded:', type(model).__name__)
+          print('Features:', model.n_features_)
+          print('Model load test PASSED')
+          "
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/delivery-forecast:latest
+            ghcr.io/${{ github.repository_owner }}/delivery-forecast:${{ github.sha }}
